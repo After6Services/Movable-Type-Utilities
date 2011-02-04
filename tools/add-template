@@ -1,0 +1,247 @@
+#!/usr/bin/perl -w
+
+##########
+#
+# Copyright (C) 2011 After6 Services LLC. All Rights Reserved.
+# This code cannot be redistributed without permission from http://www.after6services.com/.
+# For more information, consult your agreement with After6 Services.
+#
+##########
+
+package MT::Tool::Add_Template;
+use strict;
+
+use lib qw( extlib lib );
+use base qw( MT::Tool );
+use Carp qw(confess);
+use MT;
+use MT::Template;
+use MT::Permission;
+
+sub usage { '[--templatefile <your-template-name.tmpl>] [--templatename <Your Template>] [--templateoutfile <your-outfile.html>] [--templatetype <type>] [--all] [--blog_ids <id1[,] id2[,]...>] [--author <name>]' }
+
+sub help {
+    return q{
+        Adds/updates a template in selected blogs in the Movable Type instance.
+
+        --templatefile <your-template-name.tmpl>    File where the template text is stored, also the outfile name.
+        --templatename <Your Template>              The name of the template to be installed.
+        --templateoutfile <your-outfile.html>       The name of the the file to be created by the template.
+        --templatetype <type>                       The type of template (defaults to 'index').
+        --all               Add the template to all blogs in the Movable Type instance.
+        --blog_ids <id1[,] id2[,]...>
+                            Alternatively, add the template to the listed blog IDs (the list may be
+                            either comma or space-delimited).
+        --author            Name of an author with System Administrator privileges.
+    };
+}
+
+##########
+#
+# Default options
+#
+##########
+
+my ($templatefile, $templatename);
+my $templatetype = 'index';
+my $templateoutfile = 'add-template-index.html';
+my $all = 0;
+my @blog_ids = ();
+my $author = '';
+
+############
+#
+# This function is called from the base object (MT::Tool) to pick up the command line options in this tool script.
+#
+############
+
+sub options {
+    return (
+      'templatefile=s'  =>   \$templatefile,
+      'templatename=s'  =>   \$templatename,
+      'templatetype=s'  =>   \$templatetype,
+      'templateoutfile=s' => \$templateoutfile,
+      'all!'            =>   \$all,
+      'blog_ids:s{,}'   =>   \@blog_ids,
+      'author=s'        =>   \$author
+    );
+}
+
+sub main {
+    
+    ############
+    #
+    # Invoke the base object's main method
+    #
+    ############
+
+    my $class = shift;
+    my ($verbose) = $class->SUPER::main(@_);
+    
+    ############
+    #
+    # Tell what this tool script does
+    #
+    ############
+
+    print "add-template -- Adds/updates a template in selected blogs in the Movable Type instance.\n";
+   
+    unless ($author) {
+        print "Please set --author to set System Administrator when installing templates.  ie: add-template ... --author Melody\n";
+        exit;
+    }
+
+    my $mt = MT->instance();
+    my $tmpl_text;
+    
+    ##########
+    #
+    # Attempt to read the contents of $templatefile into $tmpl_text.
+    #
+    ##########
+
+    if (defined($templatefile)) {
+        local $/= undef;
+        open FILE, $templatefile or die "Couldn't open file: $!";
+        binmode FILE;
+        $tmpl_text = <FILE>;
+        close FILE;
+    } else {
+        print "Please set --templatefile to indicate the file from which the template text should be read.  ie: add-template ... --templatefile my-template.tmpl\n";
+        exit;
+    }
+    
+    ##########
+    #
+    # Look up the author
+    #
+    ##########
+
+    my $author_id;
+    if ($author) {
+        require MT::BasicAuthor;
+        my $a = MT::BasicAuthor->load({name => $author})
+            or die "Not found user $author:" . MT::BasicAuthor->errstr;
+        $author_id = $a->id;
+        
+        ##########
+        #
+        # See if the author that was chosen is a System Administrator on this MT instance.
+        #
+        ##########
+        
+        my $perms = MT::Permission->load({ blog_id => 1,
+                                       author_id => $author_id })
+        or die "$author has no permissions for blog 1.\n";
+        
+        unless ($perms->can_administer()) {
+            print "$author is not an author with System Administrator rights in this MT instance.\n";
+            exit;
+        }
+    }
+    
+    ##########
+    #
+    # Load the blogs that should have the template installed or updated.
+    #
+    ##########
+
+    my $iter;
+    #$MT::DebugMode = 7;
+    if ( $all == 1 ) {
+        $iter = MT::Blog->load_iter;
+    } else {
+        
+        ##########
+        #
+        # This code converts a comma or space delimited list of blog IDs into a numeric array of blog IDs.
+        #
+        ##########
+        
+        @blog_ids = split(/,\s*/,join(',',@blog_ids));
+        @blog_ids = map {int} @blog_ids;
+        $iter = MT::Blog->load_iter( { id => \@blog_ids } );
+    }
+    
+    ##########
+    #
+    # Iterate through the selected blogs.
+    #
+    ##########
+
+    while ( my $blog = $iter->() ) {
+        my $template = MT::Template->load( {'name' => $templatename,
+                                            'blog_id' => $blog->id });
+        
+        ##########
+        #
+        # If the template already exists, then update it.  Otherwise add the template.
+        #
+        ##########
+                                            
+        if (defined($template)) {
+            
+            print "Updating template in blog ID: ", $blog->id, ".\n" if $blog->id % 10 == 0;
+
+            ref $tmpl_text ? $template->text($tmpl_text) : $template->text(\$tmpl_text);
+            
+        } else {
+
+            print "Adding template to blog with blog ID: ", $blog->id, ".\n" if $blog->id % 10 == 0;
+
+           $template = MT::Template->new(
+                                           type => 'scalarref',
+                                           source => ref $tmpl_text ? $tmpl_text : \$tmpl_text
+                                           );            
+        }
+        
+
+       $template->name($templatename);
+       $template->blog_id($blog->id);
+       $template->modified_by($author_id);
+       $template->type($templatetype);
+       $template->outfile($templateoutfile);
+       
+        ##########
+        #
+        # Templates of type 'index' with build types of 1 should be static templates that are rebuilt every time an entry or comment is added.
+        #
+        ##########
+       
+       $template->build_type(1);
+
+       $template->save or die $template->errstr;
+       
+        ##########
+        #
+        # Force this template to be rebuilt, so the output exists as soon as possible.  When the template is rebuilt is dependent upon the
+        # MT instance and blog configuration settings.
+        #
+        ##########
+
+       $mt->rebuild_indexes(
+                               BlogID   => $blog->id,
+                               Template => $template,
+                               Force    => 1
+       )
+       || die "Rebuild error: ", $mt->errstr;
+    }
+    
+##########
+#
+# Script finishes up here.
+#
+##########
+
+print "\nadd-template complete!\n\n";
+}
+
+##########
+#
+# Invoke main subroutine to start the script.
+#
+##########
+
+__PACKAGE__->main() unless caller;
+
+1;
