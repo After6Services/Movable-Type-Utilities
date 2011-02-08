@@ -28,6 +28,7 @@ sub help {
         --templatename <Your Template>              The name of the template to be installed.
         --templateoutfile <your-outfile.html>       The name of the the file to be created by the template.
         --templatetype <type>                       The type of template (defaults to 'index').
+        --templatebuildtype <buildtype>             The build type of the template (defaults to 1 = 'static')
         --all               Add the template to all blogs in the Movable Type instance.
         --blog_ids <id1[,] id2[,]...>
                             Alternatively, add the template to the listed blog IDs (the list may be
@@ -45,6 +46,7 @@ sub help {
 my ($templatefile, $templatename);
 my $templatetype = 'index';
 my $templateoutfile = 'add-template-index.html';
+my $templatebuildtype = 1;
 my $all = 0;
 my @blog_ids = ();
 my $author = '';
@@ -57,13 +59,14 @@ my $author = '';
 
 sub options {
     return (
-      'templatefile=s'  =>   \$templatefile,
-      'templatename=s'  =>   \$templatename,
-      'templatetype=s'  =>   \$templatetype,
-      'templateoutfile=s' => \$templateoutfile,
-      'all!'            =>   \$all,
-      'blog_ids:s{,}'   =>   \@blog_ids,
-      'author=s'        =>   \$author
+      'templatefile=s'  =>      \$templatefile,
+      'templatename=s'  =>      \$templatename,
+      'templatetype=s'  =>      \$templatetype,
+      'templateoutfile=s' =>    \$templateoutfile,
+      'templatebuildtype=i' =>  \$templatebuildtype,
+      'all!'            =>      \$all,
+      'blog_ids:s{,}'   =>      \@blog_ids,
+      'author=s'        =>      \$author
     );
 }
 
@@ -181,13 +184,13 @@ sub main {
                                             
         if (defined($template)) {
             
-            print "Updating template in blog ID: ", $blog->id, ".\n" if $blog->id % 10 == 0;
+            print "Updating template in blog ID: ", $blog->id, ".\n" if $blog->id % 100 == 0;
 
             ref $tmpl_text ? $template->text($tmpl_text) : $template->text(\$tmpl_text);
             
         } else {
 
-            print "Adding template to blog with blog ID: ", $blog->id, ".\n" if $blog->id % 10 == 0;
+            print "Adding template to blog with blog ID: ", $blog->id, ".\n" if $blog->id % 100 == 0;
 
            $template = MT::Template->new(
                                            type => 'scalarref',
@@ -208,7 +211,7 @@ sub main {
         #
         ##########
        
-       $template->build_type(1);
+       $template->build_type($templatebuildtype);
 
        $template->save or die $template->errstr;
        
