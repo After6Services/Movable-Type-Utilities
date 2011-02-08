@@ -133,14 +133,11 @@ sub main {
         #
         ##########
         
-        my $perms = MT::Permission->load({ blog_id => 1,
-                                       author_id => $author_id })
-        or die "$author has no permissions for blog 1.\n";
-        
-        unless ($perms->can_administer()) {
+        unless ($a->is_superuser) {
             print "$author is not an author with System Administrator rights in this MT instance.\n";
             exit;
         }
+        
     }
     
     ##########
