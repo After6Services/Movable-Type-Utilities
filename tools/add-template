@@ -182,9 +182,13 @@ sub main {
         if (defined($template)) {
             
             print "Updating template in blog ID: ", $blog->id, ".\n" if $blog->id % 100 == 0;
-
-            ref $tmpl_text ? $template->text($tmpl_text) : $template->text(\$tmpl_text);
             
+            if (ref($tmpl_text)) {
+                $template->text(\$tmpl_text);
+            } else {
+                $template->text($tmpl_text);
+            }
+          
         } else {
 
             print "Adding template to blog with blog ID: ", $blog->id, ".\n" if $blog->id % 100 == 0;
