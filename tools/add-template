@@ -163,15 +163,19 @@ sub main {
         $iter = MT::Blog->load_iter( { id => \@blog_ids } );
     }
     
+    my $count;
+    
     ##########
     #
     # Iterate through the selected blogs.
     #
     ##########
-
+    
     while ( my $blog = $iter->() ) {
         my $template = MT::Template->load( {'name' => $templatename,
                                             'blog_id' => $blog->id });
+        
+        print "Processing ", $count , " blog.\n" if ++$count % 100 == 0;
         
         ##########
         #
@@ -181,7 +185,7 @@ sub main {
                                             
         if (defined($template)) {
             
-            print "Updating template in blog ID: ", $blog->id, ".\n" if $blog->id % 100 == 0;
+            # print "Updating template in blog ID: ", $blog->id, ".\n" if $count % 100 == 0;
             
             if (ref($tmpl_text)) {
                 $template->text(\$tmpl_text);
@@ -191,9 +195,9 @@ sub main {
           
         } else {
 
-            print "Adding template to blog with blog ID: ", $blog->id, ".\n" if $blog->id % 100 == 0;
+            # print "Adding template to blog with blog ID: ", $blog->id, ".\n" if $count % 100 == 0;
 
-           $template = MT::Template->new(
+            $template = MT::Template->new(
                                            type => 'scalarref',
                                            source => ref $tmpl_text ? $tmpl_text : \$tmpl_text
                                            );            
@@ -229,6 +233,14 @@ sub main {
                                Force    => 1
        )
        || die "Rebuild error: ", $mt->errstr;
+       
+       ##########
+       #
+       # Undefine $template to try to encourage the freeing of memory if this script becomes long-running.
+       #
+       ##########
+       
+       undef $template;
     }
     
 ##########
