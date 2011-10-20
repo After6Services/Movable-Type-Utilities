@@ -1,0 +1,258 @@
+#!/usr/bin/perl -w
+
+##########
+#
+# Copyright (C) 2011 After6 Services LLC. All Rights Reserved.
+# This code cannot be redistributed without permission from http://www.after6services.com/.
+# For more information, consult your agreement with After6 Services.
+#
+##########
+
+package MT::Tool::Remove_Category_Association;
+use strict;
+
+use lib qw( extlib lib );
+use base qw( MT::Tool );
+use Carp qw(confess);
+use MT;
+use MT::Entry;
+use MT::Category;
+use MT::Placement;
+
+sub usage { '[--category <your-category>] [--all] [--blog_ids <id1[,] id2[,]...>] [--author <name>]' }
+
+sub help {
+    return q{
+        Removes a category association from all entries in selected blogs in the Movable Type instance.
+
+        --category <your-category>                  Category label for which associations are to be removed.  Examples Movies,
+                                                    Fruit::Orange, USA::NJ::Newark.
+        --all                                       Remove the association from all entries in all blogs in the Movable Type instance.
+        --blog_ids <id1[,] id2[,]...>
+                                                    Alternatively, remove the association from all entries in the listed blog IDs (the
+                                                    list may be either comma or space-delimited).
+        --author                                    Username of an author with System Administrator privileges.
+    };
+}
+
+##########
+#
+# Default options
+#
+##########
+
+my ($categorylabel);
+my $all = 0;
+my @blog_ids = ();
+my $author = '';
+
+############
+#
+# This function is called from the base object (MT::Tool) to pick up the command line options in this tool script.
+#
+############
+
+sub options {
+    return (
+      'category=s'  =>          \$categorylabel,
+      'all!'            =>      \$all,
+      'blog_ids:s{,}'   =>      \@blog_ids,
+      'author=s'        =>      \$author
+    );
+}
+
+sub main {
+    
+    ############
+    #
+    # Invoke the base object's main method
+    #
+    ############
+
+    my $class = shift;
+    my ($verbose) = $class->SUPER::main(@_);
+    
+    ############
+    #
+    # Tell what this tool script does
+    #
+    ############
+
+    print "\nremove-category-association -- Removes a category association from all entries in selected blogs in the Movable Type instance.\n\n";
+   
+    unless ($author) {
+        print "Please set --author to the Username for a System Administrator who is disassociating entries from a category.  ie: remove-category-association ... --author Melody\n";
+        exit;
+    }
+    
+    unless ($categorylabel) {
+        print "Please set --category to the category to be disassociated from all entries.  ie: remove-category-association ... --category Movies\n";
+        print "--category may be specified hierarchically, i.e. Fruit::Orange, USA::NJ::Newark\n";
+        exit;
+    }    
+
+    my $mt = MT->instance();
+    
+    ##########
+    #
+    # Look up the author
+    #
+    ##########
+
+    my $author_id;
+    if ($author) {
+        require MT::BasicAuthor;
+        my $a = MT::BasicAuthor->load({name => $author})
+            or die "The user $author is not found:" . MT::BasicAuthor->errstr;
+        $author_id = $a->id;
+        
+        ##########
+        #
+        # See if the author that was chosen is a System Administrator on this MT instance.
+        #
+        ##########
+        
+        unless ($a->is_superuser) {
+            print "$author is not an author with System Administrator rights in this MT instance.\n";
+            exit;
+        }
+        
+    }
+    
+    ##########
+    #
+    # Load the blogs that should have the template installed or updated.
+    #
+    ##########
+
+    my ($iter, $entry_iter);
+    #$MT::DebugMode = 7;
+    if ( $all == 1 ) {
+        $iter = MT::Blog->load_iter;
+    } else {
+        
+        ##########
+        #
+        # This code converts a comma or space delimited list of blog IDs into a numeric array of blog IDs.
+        #
+        ##########
+        
+        @blog_ids = split(/,\s*/,join(',',@blog_ids));
+        @blog_ids = map {int} @blog_ids;
+        $iter = MT::Blog->load_iter( { id => \@blog_ids } );
+    }
+    
+    my $count;
+    
+    my (@cats, $parent, $cat, $cat_depth, $existing_category);
+    
+    ##########
+    #
+    # Iterate through the selected blogs.
+    #
+    ##########
+    
+    while ( my $blog = $iter->() ) {
+        
+        ##########
+        #
+        # Look up the category that is supposed to be disassociated with each entry.
+        #
+        ##########
+        
+        @cats = split( /\:\:/, $categorylabel );
+        
+        # $parent is set to 0 at this stage because this is either the only category label
+        # or the first category label in a hierarchy that's being processed.
+        
+        # $cat_depth represents the place in the Category label hierarchy we are currently processing.
+        # If $cat_depth == $#cats, then the category belongs in the $place_hash shown below.
+        my $parent = 0;
+        my $cat_depth = 0;
+        
+        foreach my $cat_label (@cats) {
+            $cat_label =~ s/\+/ /igs;
+            
+            # If $parent is not set, attempt to load the Category according to its label.
+            # If $parent is set, attempt to load the Category according to its label as a subcategory of $parent->id.
+            if ($parent == 0) {
+                $existing_category = MT::Category->load( { blog_id => $blog->id, label => $cat_label } );
+            } else {
+                $existing_category = MT::Category->load( { blog_id => $blog->id, label => $cat_label, parent => $parent->id } );
+            }
+            
+            # If the Category exists already, assign it to $cat, otherwise there is a problem and we need to report it to the user.
+            if ($existing_category) {
+                $cat = $existing_category;
+            } else {
+                
+                $cat = 0;
+                
+                print "Warning: There is no category labeled '$cat_label' ";
+                print "with parent '", $parent->label, "'" if $parent != 0;
+                print "in the blog called '", $blog->name, "'.\n";
+            }
+            
+            $parent = $cat;
+            $cat_depth++;
+
+        }
+        
+        # When we hit the bottom of the $cat_label loop, $cat is the category whose association needs to be removed.  Make sure $cat exists
+        
+        if ($cat != 0) {
+            
+            print "Disassociating all entries from category ", $cat->label, ".\n";
+            
+            MT::Placement->remove({ category_id => $cat->id });
+            
+        }
+        
+        print "Looking for entries in ", $blog->name , " that have no primary category.\n";
+        
+        $entry_iter = MT::Entry->load_iter( { blog_id => $blog->id } );
+        
+        while ( my $entry = $entry_iter->() ) {
+            my $primary_count = MT::Placement->count({ entry_id => $entry->id,
+                                                        is_primary => '1' });
+            
+            if ($primary_count == 0) {
+                
+                print "Found no primary category for ", $entry->title, ".  Trying to designate one.\n";
+                
+                my $new_primary_category = MT::Placement->load( { entry_id => $entry->id },
+                                                                { 'sort' => 'id',
+                                                                    'direction' => 'ascend',
+                                                                    limit => '1' });
+                
+                if ($new_primary_category) {
+                    $new_primary_category->is_primary('1');
+                    $new_primary_category->save;
+                }
+            }
+            
+            
+        }
+
+    $count++;
+
+    }
+    
+##########
+#
+# Script finishes up here.
+#
+##########
+
+print "\nremove-category-association complete!\n\n";
+}
+
+##########
+#
+# Invoke main subroutine to start the script.
+#
+##########
+
+__PACKAGE__->main() unless caller;
+
+1;
