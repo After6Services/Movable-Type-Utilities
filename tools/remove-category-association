@@ -121,7 +121,7 @@ sub main {
     
     ##########
     #
-    # Load the blogs that should have the template installed or updated.
+    # Load the blogs that you want to operate on.
     #
     ##########
 
