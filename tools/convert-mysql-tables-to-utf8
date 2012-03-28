@@ -1,0 +1,275 @@
+#!/usr/bin/perl -w
+
+##########
+#
+# Copyright (C) 2012, After6 Services LLC. All Rights Reserved.
+# This code cannot be redistributed without permission from http://www.after6services.com/.
+# For more information, consult your agreement with After6 Services.
+#
+##########
+
+use strict;
+use DBI;
+use DBD::mysql;
+use Carp qw(confess);
+use Getopt::Long;
+
+sub usage { '-u <your-mysql-username> -p <your-mysql-password> [--database <your-mysql-database>]' }
+
+sub help {
+    return q{
+        Iterates through your Movable Type database tables looking for tables that are encoded in latin1.  Converts the
+        the latin1 tables to utf8.
+
+        -u <your-mysql-username>                    The MySQL username that should be used.
+        -p <your-mysql-password>                    The MySQL password that should be used.
+        --database <your-mysql-database>            The MySQL database that you use with Movable Type.
+    };
+}
+
+##########
+#
+# convert-mysql-tables-to-utf8
+#
+# This script deals with a common problem that long-time Movable Type users face.  As Movable Type has evolved, it
+# has become character set-aware and has encouraged use of UTF-8 as the character set used for publishing.
+#
+# Many Movable Type users that work in MySQL have databases with tables encoded in Latin-1.  As Movable Type has been
+# upgraded from version 3.3 to 4.0, 4.1, 4.2, 4.3, and now to 5.0, and 5.1, character set conflicts have become a bigger
+# issue.
+#
+# This script can be run from the command line in the Movable Type tools directory.  If connected to the proper MySQL database,
+# it will iterate through the tables exporting the data to a MySQLdump file, changing the encoding from Latin-1 to UTF-8, and
+# then reloading the data into the same database.
+#
+# Obviously, this script is designed for Latin-1 to UTF-8 conversion, and should only be run in an environment where the
+# MySQL database is backed up and held in a safe location.
+#
+# Depending on how much content exists in the database, this script can take a great deal of time to execute.  You also need
+# to have the ability to execute a long-running, possibly resource-intensive script to successfully use it.
+#
+# The core commands in this script came from some work done by Nathan Keiser at Bluebox.net in July 2009.  After6 has done many
+# of these processes manually for customers.  The three core commands are expressed most concisely in the article called
+# "Getting Out of MySQL Character Set Hell," http://www.bluebox.net/news/2009/07/mysql_encoding.
+#
+# We automate these functions in a script that can be run from the Movable Type tools menu, although it is not a traditional
+# Movable Type tool 
+#
+#
+##########
+
+##########
+#
+# Default options
+#
+##########
+
+my ($dsn, $dbh, $sth,
+    $username, $password, $database, $hostname, $port,
+    @result);
+
+############
+#
+# This function is called to pick up the command line options in this tool script.
+#
+############
+
+sub options {
+    return (
+      GetOptions(
+        'u|username=s'    =>  \$username,
+        'p|password=s'    =>  \$password,
+        'database=s'      =>  \$database,
+        'h|host=s'        =>  \$hostname,
+        'port=i'          =>  \$port)
+      );
+}
+
+sub main {
+    
+    ############
+    #
+    # Set the default options
+    #
+    ############
+    
+    $hostname = 'localhost';
+    $port = 3306;
+    
+    options($username, $password, $database, $hostname, $port);
+    
+    ############
+    #
+    # Tell what this tool script does
+    #
+    ############
+
+    print "\nconvert-mysql-tables-to-utf8 -- Iterates through your Movable Type database tables looking for tables that are not encoded in utf8.  Converts the the non-utf8 tables to utf8.\n\n";
+   
+    unless ($username) {
+        print "Please set -u to the username for MySQL.  ie: convert-mysql-tables-to-utf8 ... -u mysqluser\n";
+        exit;
+    }
+    
+    unless ($password) {
+        print "Password: ";
+        $password = <STDIN>;   ## read one line from the STDIN file handle 
+        chomp($password);      ## remove the trailing "\n" if present
+
+        unless ($password) {
+            print "Please set -p to the MySQL password.  ie: convert-mysql-tables-to-utf8 ... -u mysqluser -p mysqlpassword\n";
+            exit;
+        }
+    }
+    
+    unless ($database) {
+        print "Please set --database to the MySQL database that's being parsed.  ie: convert-mysql-tables-to-utf8 ... --database mtdatabase\n";
+        exit;
+    }
+    
+    ##########
+    #
+    # Compose DSN
+    #
+    ##########
+    
+    $dsn = "dbi:mysql:information_schema:$hostname:$port";
+    
+    ##########
+    #
+    # Connect to database using DBI
+    #
+    ##########
+   
+    $dbh = DBI->connect($dsn, $username, $password)
+        or die "Database connection error: " . DBI->errstr;
+    
+    ##########
+    #
+    # Prepare and execute statement
+    #
+    ##########
+    
+    $sth = $dbh->prepare("select table_name from tables where table_schema = ? and table_collation like '%latin1%'")
+        or die "Couldn't prepare statement: " . DBI->errstr;
+        
+    $sth->execute($database);
+    
+    ##########
+    #
+    # Read the matching records and operate on them
+    #
+    ##########
+    
+    while (@result = $sth->fetchrow_array()) {
+        ##########
+        #
+        # The table being operated on is $table.
+        #
+        ##########
+        
+        my $table = $result[0];
+        
+        ##########
+        #
+        # Print statements from this point in the script serve as general comments.
+        #
+        ##########
+        
+        print "\nDumping $database\.$table to the file system...\n";
+        
+        ##########
+        #
+        # Comments taken directly from http://www.bluebox.net/news/2009/07/mysql_encoding:
+        #
+        # The directives Ðskip-set-charset and Ðdefault-char-set=latin1 options should prevent MySQL from taking
+        # the already-Latin-1-collated table and ÒhelpfullyÓ converting it to any other character set for you.
+        # This should ensure that your mysqldump is really in the Latin-1 character encoding scheme.
+        #
+        # The Ðskip-extended-insert option forces mysqldump to put each INSERT command in the dump on its own line.
+        # This will make the dump take much longer to re-import, however, in my experimentation, adding this option was
+        # enough to prevent the dump from having syntax errors in in anywhere. And in any case, should the re-import fail
+        # for any reason, having each rowÕs data on its own line really helps to be able to zero-in on which rows are
+        # causing you problems (and gives you easier options to work-around the problem rows).
+        #
+        ##########        
+        
+        system("/usr/local/mysql/mysqldump -u $username -p$password -h $hostname -P $port --opt --skip-set-charset "
+               . "--default-character-set=latin1 --skip-extended-insert $database --tables $table > $database.$table.sql") == 0
+            or die "mysqldump failed: $?";
+            
+        print "Replacing latin1 encodings with utf8 in the dump file $database.$table.sql...\n";
+        
+        ##########
+        #
+        # The perl command below takes your mysqldump and replaces the first instance of ÒDEFAULT CHARSET=latin1Ó and replaces
+        # it with ÒDEFAULT CHARSET=utf8Ó. Since your dump should only contain one table, the first instance of this string
+        # should occur within the CREATE TABLE definition toward the top of the dum Doing this change using a perl script both
+        # avoids any problems you might introduce by opening the dump in an editor (like, say, if it ÒhelpfullyÓ decides to wrap
+        # lines for you), and allows you to make this change on a dump thatÕs multiple-gigabytes in size.
+        #
+        ##########
+            
+        system ("/usr/bin/perl -i -pe 's/DEFAULT CHARSET=latin1/DEFAULT CHARSET=utf8/' $database.$table.sql") == 0
+            or die "perl pattern replacement failed: $?";
+            
+        ##########
+        #
+        # The third command re-imports the modified mysqldump back into the database. The new table should have the UTF-8 collation.
+        # In spite of the fact that the data was originally encoded using Latin-1, in virtually all cases we've seen, MySQL
+        # handles primarily-ASCII data processed in this manner correctly.
+        #
+        # More comments from http://www.bluebox.net/news/2009/07/mysql_encoding:
+        #
+        # This is because ASCII characters are binary equivalents in Latin-1 and UTF-8 character sets.
+        #
+        # For those rows with characters that are not ASCII in them, it appears the MySQL developers had already thought of the
+        # above conversion problems, and therefore wrote the mysql client to take a Òbest guessÓ approach to importing
+        # improperly-formatted data. Specifically, if in the above mysqldump, the mysql client gets handed rows with invalid
+        # UTF-8 characters in them, it appears mysql will assume that the characters are actually Latin-1 encoded and convert
+        # them to UTF-8 on the fly.
+        #
+        ##########
+            
+        print "Reloading data from reprocessed dump file $database.$table.sql into MySQL $database.$table...\n";
+        
+        system("cat $database.$table.sql | mysql -u $username -p$password -h $hostname -P $port $database") == 0
+            or die "mysql database table reload failed: $?";
+                       
+    }
+    
+    ##########
+    #
+    # Tell the statement handle that we are finished with it.  Then disconnect from the database.
+    #
+    ##########   
+    
+    $sth->finish;
+    
+    $dbh->disconnect;
+    
+
+    ##########
+    #
+    # Script finishes up here by reporting that execution is completed.
+    #
+    ##########
+    
+    print "\n\nconvert-mysql-tables-to-utf8 complete!\n\n";
+}
+
+##########
+#
+# Invoke main subroutine to start the script.
+#
+##########
+
+main();
+
+##########
+#
+# Return success if the script returns normally from the main subroutine.
+#
+##########
+
+1;
